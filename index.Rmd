@@ -1,0 +1,170 @@
+---
+title: "Shrinkage and Regularized Regression"
+author: "Connor Gilroy"
+date: "2018-05-10"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+# Setup
+
+```{r}
+library("rstan")
+library("loo")
+library("glmnet")
+library("tidyverse")
+library("lasso2")
+
+options(mc.cores = parallel::detectCores())
+rstan_options(auto_write = TRUE)
+```
+
+# Data
+
+We're using data on prostate cancer, found in the `lasso2` package, for illustrative purposes only. Regularized regression is even more useful when you have more variables than this.
+
+```{r}
+data("Prostate", package = "lasso2")
+f <- lpsa ~ lcavol + lweight + age + lbph + svi + lcp + gleason + pgg45 - 1L
+prostate_data <- list(
+  y = Prostate$lpsa,
+  X = model.matrix(f, data = Prostate)
+)
+
+prostate_data$N <- nrow(prostate_data$X)
+prostate_data$K <- ncol(prostate_data$X)
+prostate_data$X <- scale(prostate_data$X)
+```
+
+# Ridge regression
+
+In Bayesian ridge regression, the global scale parameter tau is inversely related to the parameter called lambda in `glmnet`.
+
+```{r}
+fit_ridge_glmnet <- cv.glmnet(x = prostate_data$X, y = prostate_data$y, 
+                              alpha = 0)
+```
+
+In the first version of the model, tau is fixed: 
+
+```{r}
+mod_ridge1 <- stan_model("stan/ridge_regression_1.stan")
+```
+
+Try changing the value of tau: 
+
+```{r}
+tau_values <- c(4, 2, 1, .5, .04)
+fit_ridge1 <- sampling(mod_ridge1, data = c(prostate_data, tau = tau_values[1]))
+# fit_ridge1 <- sampling(mod_ridge1, data = c(prostate_data, tau = tau_values[5]))
+```
+
+Compare the coefficients as tau gets smaller: 
+
+```{r}
+print(fit_ridge1, pars = c("a", "b", "sigma"))
+plot(fit_ridge1, pars = c("a", "b", "sigma"))
+```
+
+In the second version, we actually treat tau as a model parameter, and put a prior on it: 
+
+```{r message=FALSE}
+mod_ridge2 <- stan_model("stan/ridge_regression_2.stan")
+fit_ridge2 <- sampling(mod_ridge2, data = prostate_data)
+```
+
+```{r}
+print(fit_ridge2, pars = c("a", "b", "sigma", "tau"))
+plot(fit_ridge2, pars = c("a", "b", "sigma", "tau"))
+```
+
+# Lasso regression
+
+Replace the normal priors on the coefficients with Laplace priors: 
+
+```{r message=FALSE}
+mod_lasso1 <- stan_model("stan/lasso_regression_1.stan")
+```
+
+```{r message=FALSE}
+tau_values <- c(4, 2, 1, .5, .04)
+fit_lasso1 <- sampling(mod_lasso1, data = c(prostate_data, tau = tau_values[1]))
+# fit_lasso1 <- sampling(mod_lasso1, data = c(prostate_data, tau = tau_values[5]))
+```
+
+```{r}
+print(fit_lasso1, pars = c("a", "b", "sigma"))
+plot(fit_lasso1, pars = c("a", "b", "sigma"))
+```
+
+```{r message=FALSE}
+mod_lasso2 <- stan_model("stan/lasso_regression_2.stan")
+fit_lasso2 <- sampling(mod_lasso2, data = prostate_data)
+```
+
+```{r}
+print(fit_lasso2, pars = c("a", "b", "sigma", "tau"))
+plot(fit_lasso2, pars = c("a", "b", "sigma", "tau"))
+```
+
+# Regularization paths
+
+What happens as tau decreases? (as lambda, in glmnet terms, decreases)---all of the coefficients are shrunk toward 0, but at different rates. 
+
+In machine-learning lasso regression, some coefficients actually go to 0, so the paths look very different for ridge and for lasso. This doesn't happen with the posterior distributions in the Bayesian lasso.
+
+```{r}
+p_ridge <- glmnet(x = prostate_data$X, y = prostate_data$y, alpha = 0)
+p_lasso <- glmnet(x = prostate_data$X, y = prostate_data$y, alpha = 1)
+plot(p_ridge)
+plot(p_lasso)
+```
+
+# More sparsity: hierarchical shrinkage
+
+We can use different global-local scale mixtures of normal distributions as our priors to encourage more sparsity. (The lasso, remember, is actually one of these too.)
+
+We combine the global scale for the coefficient priors, tau, with a local scale lambda. (Sorry, there aren't enough Greek letters to go around...) 
+
+$$\beta_{k} \sim Normal(0, \lambda_k \tau)$$
+
+(Written Stan-style, so $\lambda_k \tau$ is the standard deviation.)
+
+We draw those lambdas from some distribution.
+
+$$\lambda_k \sim Cauchy^{+}(0, 1)$$
+
+This is the "horseshoe" prior, one special case of the hierarchical shrinkage prior (`hs()` in `rstanarm`). 
+
+As usual, we can fix tau or put a prior on it: 
+
+```{r message=FALSE}
+mod_hs1 <- stan_model("stan/hierarchical_shrinkage_1.stan")
+mod_hs2 <- stan_model("stan/hierarchical_shrinkage_2.stan")
+```
+
+You can see that these models are harder to sample from, because they have more divergent transitions: 
+
+```{r message=FALSE}
+fit_hs1 <- sampling(mod_hs1, data = c(prostate_data, tau = tau_values[4]), 
+                    control = list(adapt_delta = .999, 
+                                   max_treedepth = 15))
+```
+
+Increasing adapt_delta makes sampling slower, but even increasing it a great deal doesn't prevent all divergent transitions in this case. http://mc-stan.org/misc/warnings.html#divergent-transitions-after-warmup
+
+```{r}
+plot(fit_hs1, pars = "b")
+plot(fit_hs1, pars = "lambda")
+```
+
+```{r message=FALSE}
+fit_hs2 <- sampling(mod_hs2, data = prostate_data, 
+                    control = list(adapt_delta = .999, 
+                                   max_treedepth = 15))
+```
+
+```{r}
+plot(fit_hs2, pars = c("lambda", "tau"))
+```
