@@ -1,7 +1,7 @@
 ---
 title: "Shrinkage and Regularized Regression"
 author: "Connor Gilroy"
-date: "2018-05-10"
+date: "2018-05-17"
 output: html_document
 editor_options: 
   chunk_output_type: console
@@ -9,7 +9,7 @@ editor_options:
 
 # Setup
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 library("rstan")
 library("loo")
 library("glmnet")
@@ -48,7 +48,7 @@ fit_ridge_glmnet <- cv.glmnet(x = prostate_data$X, y = prostate_data$y,
 
 In the first version of the model, tau is fixed: 
 
-```{r}
+```{r message=FALSE}
 mod_ridge1 <- stan_model("stan/ridge_regression_1.stan")
 ```
 
